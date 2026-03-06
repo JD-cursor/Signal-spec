@@ -334,7 +334,9 @@ def get_favorites():
         rows = conn.execute("""
             SELECT f.*, p.subreddit, p.title, p.selftext, p.author, p.score,
                    p.num_comments, p.url, p.created_utc,
-                   a.summary, a.category, a.severity, a.relevance_tags
+                   a.summary, a.category, a.severity, a.relevance_tags,
+                   a.has_existing_solution, a.existing_solution_notes,
+                   a.willingness_to_pay
             FROM favorites f
             JOIN posts p ON p.id = f.post_id
             LEFT JOIN analysis a ON a.post_id = f.post_id

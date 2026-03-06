@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type Stats, type Trends } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { RefreshCw } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -25,11 +27,29 @@ const CATEGORY_COLORS: Record<string, string> = {
 export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [trends, setTrends] = useState<Trends | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
 
   useEffect(() => {
     api.getStats().then(setStats);
     api.getTrends().then(setTrends);
   }, []);
+
+  const triggerScan = async () => {
+    setScanning(true);
+    setScanMessage(null);
+    try {
+      const res = await fetch("http://localhost:8000/api/collect", { method: "POST" });
+      const data = await res.json();
+      setScanMessage(data.detail);
+      api.getStats().then(setStats);
+      api.getTrends().then(setTrends);
+    } catch {
+      setScanMessage("Scan failed — is the backend running?");
+    } finally {
+      setScanning(false);
+    }
+  };
 
   if (!stats || !trends) {
     return <div className="text-muted-foreground">Loading...</div>;
@@ -46,11 +66,22 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Overview of discovered pain points
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Overview of discovered pain points
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {scanMessage && (
+            <span className="text-sm text-muted-foreground">{scanMessage}</span>
+          )}
+          <Button onClick={triggerScan} disabled={scanning}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${scanning ? "animate-spin" : ""}`} />
+            {scanning ? "Scanning..." : "Trigger Scan"}
+          </Button>
+        </div>
       </div>
 
       {/* Stat cards */}

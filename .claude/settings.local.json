@@ -3,7 +3,9 @@
     "allow": [
       "Bash(python3:*)",
       "Bash(source:*)",
-      "Bash(npx shadcn@latest:*)"
+      "Bash(npx shadcn@latest:*)",
+      "Bash(npm install:*)",
+      "Bash(npx vite:*)"
     ]
   }
 }
