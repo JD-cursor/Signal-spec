@@ -1,7 +1,8 @@
-"""End-to-end pipeline: collect from Reddit, then analyze with Claude."""
+"""End-to-end pipeline: collect from Reddit, then analyze with Claude, then cleanup."""
 
 from collector import collect_posts
 from analyzer import analyze_all
+from database import cleanup_old_posts
 
 
 def main():
@@ -18,6 +19,12 @@ def main():
         analyze_all()
     else:
         print("\nNo new posts to analyze.")
+
+    print()
+    print("=" * 50)
+    print("STEP 3: Database cleanup")
+    print("=" * 50)
+    cleanup_old_posts()
 
     print("\nPipeline complete.")
 

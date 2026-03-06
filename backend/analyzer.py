@@ -1,4 +1,4 @@
-"""Claude analysis pipeline — analyzes unprocessed posts for pain points."""
+"""Claude analysis pipeline — batch triage then deep analysis on winners."""
 
 import json
 import time
@@ -6,11 +6,24 @@ import anthropic
 from database import get_connection, init_db
 from config import ANTHROPIC_API_KEY
 
-SYSTEM_PROMPT = """You are analyzing a Reddit post to identify whether it contains a real pain point that could be solved with a software product.
+TRIAGE_BATCH_SIZE = 20
+
+TRIAGE_SYSTEM = "You quickly assess Reddit posts to identify which ones contain real pain points that could be solved with software. Respond ONLY with valid JSON."
+
+TRIAGE_PROMPT_TEMPLATE = """Below are Reddit posts. For each, decide if it contains a genuine pain point worth analyzing further.
+
+{posts_block}
+
+Respond with a JSON array of post IDs that ARE worth analyzing (contain a real pain point, frustration, or unmet need):
+{{"worth_analyzing": ["id1", "id2", ...]}}
+
+Be selective — only include posts with clear, specific pain points. Skip generic questions, memes, or vague complaints."""
+
+ANALYSIS_SYSTEM = """You are analyzing a Reddit post to identify whether it contains a real pain point that could be solved with a software product.
 
 Respond ONLY with valid JSON, no markdown formatting."""
 
-USER_PROMPT_TEMPLATE = """Post title: {title}
+ANALYSIS_PROMPT_TEMPLATE = """Post title: {title}
 Post body: {selftext}
 Subreddit: r/{subreddit}
 
@@ -42,11 +55,37 @@ def get_unanalyzed_posts(conn) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def triage_batch(client: anthropic.Anthropic, posts: list[dict]) -> set[str]:
+    """Send a batch of posts to Claude for quick triage. Returns set of IDs worth analyzing."""
+    posts_block = "\n\n".join(
+        f"[{p['id']}] r/{p['subreddit']}: {p['title']}\n{p['selftext'][:200]}"
+        for p in posts
+    )
+    prompt = TRIAGE_PROMPT_TEMPLATE.format(posts_block=posts_block)
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=TRIAGE_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]
+            text = text.rsplit("```", 1)[0]
+        result = json.loads(text)
+        return set(result.get("worth_analyzing", []))
+    except (json.JSONDecodeError, IndexError, KeyError, anthropic.APIError) as e:
+        print(f"  Triage error: {e} — falling back to analyzing all in batch")
+        return {p["id"] for p in posts}
+
+
 def analyze_post(client: anthropic.Anthropic, post: dict) -> dict | None:
-    """Send a single post to Claude for analysis. Returns parsed JSON or None."""
-    user_prompt = USER_PROMPT_TEMPLATE.format(
+    """Send a single post to Claude for deep analysis. Returns parsed JSON or None."""
+    prompt = ANALYSIS_PROMPT_TEMPLATE.format(
         title=post["title"],
-        selftext=post["selftext"][:2000],  # truncate long posts
+        selftext=post["selftext"][:2000],
         subreddit=post["subreddit"],
     )
 
@@ -54,17 +93,14 @@ def analyze_post(client: anthropic.Anthropic, post: dict) -> dict | None:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=512,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
+            system=ANALYSIS_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
         )
-
         text = response.content[0].text.strip()
-        # Strip markdown code fences if present
         if text.startswith("```"):
             text = text.split("\n", 1)[1]
             text = text.rsplit("```", 1)[0]
         return json.loads(text)
-
     except (json.JSONDecodeError, IndexError, KeyError) as e:
         print(f"  Parse error for {post['id']}: {e}")
         return None
@@ -76,7 +112,6 @@ def analyze_post(client: anthropic.Anthropic, post: dict) -> dict | None:
 def store_analysis(conn, post_id: str, result: dict):
     now = int(time.time())
 
-    # Handle "not_relevant" short-form response
     category = result.get("category", "other")
     if category == "not_relevant":
         conn.execute(
@@ -105,8 +140,16 @@ def store_analysis(conn, post_id: str, result: dict):
         )
 
 
+def mark_not_relevant(conn, post_id: str):
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO analysis (post_id, summary, category, analyzed_at) VALUES (?, ?, ?, ?)",
+        (post_id, None, "not_relevant", now),
+    )
+
+
 def analyze_all():
-    """Process all unanalyzed posts through Claude."""
+    """Batch triage, then deep-analyze only the promising posts."""
     init_db()
     conn = get_connection()
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -114,9 +157,30 @@ def analyze_all():
     posts = get_unanalyzed_posts(conn)
     print(f"Found {len(posts)} unanalyzed posts.")
 
-    for i, post in enumerate(posts, 1):
-        print(f"[{i}/{len(posts)}] Analyzing {post['id']}: {post['title'][:60]}...")
+    if not posts:
+        conn.close()
+        return
 
+    # Stage 1: Batch triage
+    worth_analyzing: set[str] = set()
+    for i in range(0, len(posts), TRIAGE_BATCH_SIZE):
+        batch = posts[i : i + TRIAGE_BATCH_SIZE]
+        print(f"Triaging batch {i // TRIAGE_BATCH_SIZE + 1} ({len(batch)} posts)...")
+        winners = triage_batch(client, batch)
+        worth_analyzing.update(winners)
+
+        # Mark losers as not_relevant
+        for post in batch:
+            if post["id"] not in winners:
+                mark_not_relevant(conn, post["id"])
+        conn.commit()
+
+    print(f"Triage complete: {len(worth_analyzing)} posts worth deep analysis.")
+
+    # Stage 2: Deep analysis on winners only
+    to_analyze = [p for p in posts if p["id"] in worth_analyzing]
+    for i, post in enumerate(to_analyze, 1):
+        print(f"[{i}/{len(to_analyze)}] Analyzing {post['id']}: {post['title'][:60]}...")
         result = analyze_post(client, post)
         if result:
             store_analysis(conn, post["id"], result)

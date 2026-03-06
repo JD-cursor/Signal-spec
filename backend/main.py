@@ -166,16 +166,19 @@ def get_posts(
         """
         total = conn.execute(count_sql, params).fetchone()[0]
 
-        # Fetch page
+        # Fetch page — sorted by signal strength (severity + wtp + reddit score)
         offset = (page - 1) * per_page
         data_sql = f"""
             SELECT p.*, a.summary, a.category, a.severity,
                    a.has_existing_solution, a.existing_solution_notes,
-                   a.willingness_to_pay, a.relevance_tags, a.analyzed_at
+                   a.willingness_to_pay, a.relevance_tags, a.analyzed_at,
+                   (CASE a.severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END)
+                   + (CASE a.willingness_to_pay WHEN 'likely' THEN 3 WHEN 'possible' THEN 2 WHEN 'unlikely' THEN 1 ELSE 0 END)
+                   + MIN(p.score / 50.0, 3) as signal_score
             FROM posts p
             LEFT JOIN analysis a ON a.post_id = p.id
             WHERE {where_clause}
-            ORDER BY p.created_utc DESC
+            ORDER BY signal_score DESC, p.created_utc DESC
             LIMIT ? OFFSET ?
         """
         rows = conn.execute(data_sql, params + [per_page, offset]).fetchall()

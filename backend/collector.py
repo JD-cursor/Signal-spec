@@ -25,7 +25,11 @@ def get_existing_post_ids(conn) -> set[str]:
     return {row["id"] for row in rows}
 
 
-def collect_posts(limit_per_query: int = 50):
+MIN_SCORE = 3
+MIN_SELFTEXT_LENGTH = 20
+
+
+def collect_posts(limit_per_query: int = 5):
     """Run a full collection pass across all subreddits and search signals."""
     init_db()
     reddit = create_reddit_client()
@@ -34,6 +38,7 @@ def collect_posts(limit_per_query: int = 50):
 
     new_count = 0
     skipped = 0
+    filtered = 0
     now = int(time.time())
 
     total_queries = len(SUBREDDITS) * len(SEARCH_SIGNALS)
@@ -56,6 +61,17 @@ def collect_posts(limit_per_query: int = 50):
                         skipped += 1
                         continue
 
+                    # Pre-filter: skip low-engagement and empty posts
+                    if post.score < MIN_SCORE:
+                        filtered += 1
+                        existing_ids.add(post_id)
+                        continue
+                    selftext = post.selftext or ""
+                    if len(selftext) < MIN_SELFTEXT_LENGTH:
+                        filtered += 1
+                        existing_ids.add(post_id)
+                        continue
+
                     conn.execute(
                         """INSERT INTO posts (id, subreddit, title, selftext, author, score,
                            num_comments, url, created_utc, collected_at)
@@ -64,7 +80,7 @@ def collect_posts(limit_per_query: int = 50):
                             post_id,
                             post.subreddit.display_name,
                             post.title,
-                            post.selftext or "",
+                            selftext,
                             str(post.author) if post.author else "[deleted]",
                             post.score,
                             post.num_comments,
@@ -83,7 +99,7 @@ def collect_posts(limit_per_query: int = 50):
                 continue
 
     conn.close()
-    print(f"\nDone. New posts: {new_count}, Skipped (dupes): {skipped}")
+    print(f"\nDone. New posts: {new_count}, Skipped (dupes): {skipped}, Filtered (low quality): {filtered}")
     return new_count
 
 

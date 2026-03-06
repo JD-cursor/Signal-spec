@@ -57,6 +57,37 @@ def init_db():
     conn.close()
 
 
+def cleanup_old_posts(not_relevant_days: int = 30, unanalyzed_days: int = 7):
+    """Remove stale data: old not_relevant posts and unanalyzed orphans."""
+    conn = get_connection()
+    now = int(time.time())
+
+    # Delete not_relevant posts older than N days
+    cutoff_nr = now - (not_relevant_days * 86400)
+    result = conn.execute("""
+        DELETE FROM posts WHERE id IN (
+            SELECT p.id FROM posts p
+            JOIN analysis a ON a.post_id = p.id
+            WHERE a.category = 'not_relevant' AND a.analyzed_at < ?
+        )
+    """, [cutoff_nr])
+    # Clean up orphaned analysis rows
+    conn.execute("DELETE FROM analysis WHERE post_id NOT IN (SELECT id FROM posts)")
+    nr_deleted = result.rowcount
+
+    # Delete unanalyzed posts older than N days
+    cutoff_ua = now - (unanalyzed_days * 86400)
+    result = conn.execute("""
+        DELETE FROM posts WHERE id NOT IN (SELECT post_id FROM analysis)
+        AND collected_at < ?
+    """, [cutoff_ua])
+    ua_deleted = result.rowcount
+
+    conn.commit()
+    conn.close()
+    print(f"Cleanup: removed {nr_deleted} old not_relevant posts, {ua_deleted} unanalyzed orphans.")
+
+
 if __name__ == "__main__":
     init_db()
     print("Database initialized.")
